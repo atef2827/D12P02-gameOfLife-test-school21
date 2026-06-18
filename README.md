@@ -133,3 +133,14 @@ Suddenly, you hear a clear, perfectly audible voice from the speakers:
 It's getting dark outside. The monitor turns off, leaving only the soft glow of the desk lamp in the room. The journey of learning is coming to an end, but the journey of knowledge is just beginning.
 
 >💡 [Tap here](http://opros.so/p31wz)to leave your feedback on the project. It's anonymous and will help our team make your educational experience better. We recommend completing the survey immediately after the project.
+
+
+#to run the game v1 
+cd src
+gcc -std=c11 -Wall -Wextra -Werror game_of_life.c -o game_of_life
+./game_of_life patterns/glider.txt
+
+
+to run the game v2 using lncurses
+gcc -std=c11 -Wall -Wextra -Werror game_of_life_v2.c -o game_of_life_v2 -lncurses
+./game_of_life_v2 < patterns/gosper_gun.txt

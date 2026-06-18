@@ -1,20 +1,33 @@
-/* The Game of Life -- Conway's cellular automaton.
+/* The Game of Life -- Conway's cellular automaton (<stdio.h>-only version).
  *
- * The universe is a self-contained (toroidal) board of ROWS x COLS cells.
- * The initial state is read from stdin (so it can be redirected from a file),
- * while interactive controls are read from the controlling terminal /dev/tty.
+ * This build depends on nothing but the C standard I/O library.
  *
- * Controls:
- *   A / a  -> speed up   (smaller delay between generations)
- *   Z / z  -> slow down  (larger delay between generations)
- *   Space  -> end the game
+ * The board is a self-contained (toroidal) grid of ROWS x COLS cells: the
+ * neighbour of an edge cell is the cell on the opposite edge. A "filled" glyph
+ * (O * 1 # ...) is a live cell; anything else (dots, spaces) is dead.
  *
- * The code follows E. Dijkstra's structured programming principles:
- * no goto, no global variables, a single entry and exit per construct,
- * nesting depth kept shallow, and small single-purpose functions.
+ * Two ways to run it:
+ *
+ *   1. Interactive:   ./game_of_life patterns/glider.txt
+ *      The seed is read from the file given on the command line, so stdin stays
+ *      free for your controls. Type a key, then press Enter to apply it
+ *      (standard line-buffered input, exactly like a turn-based terminal game).
+ *
+ *   2. Scriptable:    ./game_of_life < patterns/glider.txt
+ *      With no file argument the seed is read from stdin; any control characters
+ *      placed in the stream after the 25 seed lines drive the steps.
+ *
+ * Controls (read from stdin):
+ *        A / a  -> faster (more generations advanced per step)
+ *        Z / z  -> slower (fewer generations advanced per step)
+ *        Space  -> end the game
+ *        Enter (or any other key) -> advance one step at the current speed
+ *
+ * The code follows E. Dijkstra's structured programming principles: no goto,
+ * no continue, no global variables, one entry and one exit per construct,
+ * shallow nesting, and small single-purpose functions.
  */
 
-#include <ncurses.h>
 #include <stdio.h>
 
 #define ROWS 25
@@ -23,10 +36,9 @@
 #define CELL_ALIVE 'O'
 #define CELL_DEAD ' '
 
-#define DELAY_START 200
-#define DELAY_STEP 25
-#define DELAY_MIN 25
-#define DELAY_MAX 1000
+#define SPEED_START 1
+#define SPEED_MIN 1
+#define SPEED_MAX 20
 
 #define KEY_FASTER_LOWER 'a'
 #define KEY_FASTER_UPPER 'A'
@@ -38,35 +50,32 @@ typedef struct {
     int cells[ROWS][COLS];
 } Field;
 
-int main(void);
+int main(int argc, char** argv);
 static int char_is_alive(int ch);
-static void read_field(Field* field);
+static void read_field(FILE* source, Field* field);
 static int count_neighbours(const Field* field, int row, int col);
 static void next_generation(const Field* current, Field* next);
+static void step(Field** current, Field** next);
 static int count_population(const Field* field);
-static void draw_field(const Field* field);
-static void draw_status(int generation, int population, int delay);
-static int adjust_delay(int delay, int ch);
-static SCREEN* init_screen(FILE* terminal);
+static void clear_screen(void);
+static void draw_field(const Field* field, int generation, int population, int speed);
+static int adjust_speed(int speed, int ch);
 static void run_game(Field* current, Field* next);
 
-int main(void) {
+int main(int argc, char** argv) {
     Field current = {0};
     Field next = {0};
+    FILE* seed = (argc > 1) ? fopen(argv[1], "r") : stdin;
     int status = 0;
-    read_field(&current);
-    FILE* terminal = fopen("/dev/tty", "r");
-    SCREEN* screen = (terminal != NULL) ? init_screen(terminal) : NULL;
-    if (screen == NULL) {
-        fprintf(stderr, "Error: an interactive terminal is required to play.\n");
+    if (seed == NULL) {
+        fprintf(stderr, "Error: cannot open seed file '%s'.\n", argv[1]);
         status = 1;
     } else {
+        read_field(seed, &current);
+        if (seed != stdin) {
+            fclose(seed);
+        }
         run_game(&current, &next);
-        endwin();
-        delscreen(screen);
-    }
-    if (terminal != NULL) {
-        fclose(terminal);
     }
     return status;
 }
@@ -78,12 +87,13 @@ static int char_is_alive(int ch) {
            ch == '@';
 }
 
-/* Read the seed matrix from stdin, one terminal row per text line. */
-static void read_field(Field* field) {
+/* Read the seed matrix from "source", one board row per text line. Reading
+ * stops after ROWS lines so a redirected stream can still carry control input. */
+static void read_field(FILE* source, Field* field) {
     int row = 0;
     int col = 0;
     int ch = 0;
-    while (row < ROWS && (ch = fgetc(stdin)) != EOF) {
+    while (row < ROWS && (ch = fgetc(source)) != EOF) {
         if (ch == '\n') {
             row++;
             col = 0;
@@ -122,6 +132,15 @@ static void next_generation(const Field* current, Field* next) {
     }
 }
 
+/* Advance one generation and swap the two boards, so each step is
+ * O(rows*cols) with no copying and no dynamic allocation. */
+static void step(Field** current, Field** next) {
+    next_generation(*current, *next);
+    Field* swap = *current;
+    *current = *next;
+    *next = swap;
+}
+
 static int count_population(const Field* field) {
     int population = 0;
     for (int row = 0; row < ROWS; row++) {
@@ -132,74 +151,59 @@ static int count_population(const Field* field) {
     return population;
 }
 
-static void draw_field(const Field* field) {
+/* Move the cursor home and clear the screen using ANSI escape codes
+ * (plain characters written to stdout -- no system calls). */
+static void clear_screen(void) { printf("\033[H\033[J"); }
+
+static void draw_field(const Field* field, int generation, int population, int speed) {
+    clear_screen();
+    printf("The Game of Life | Gen: %-5d | Pop: %-4d | Speed: %d gen/step\n", generation, population, speed);
     for (int row = 0; row < ROWS; row++) {
         for (int col = 0; col < COLS; col++) {
-            int glyph = field->cells[row][col] ? CELL_ALIVE : CELL_DEAD;
-            mvaddch(row, col, glyph);
+            putchar(field->cells[row][col] ? CELL_ALIVE : CELL_DEAD);
         }
+        putchar('\n');
     }
+    printf("[A] faster   [Z] slower   [Space] quit\n");
 }
 
-static void draw_status(int generation, int population, int delay) {
-    mvprintw(ROWS, 0, "Gen:%-6d Pop:%-5d Delay:%-4dms  [A]faster  [Z]slower  [Space]quit ", generation,
-             population, delay);
-}
-
-/* Return a new delay clamped to [DELAY_MIN, DELAY_MAX] for the pressed key. */
-static int adjust_delay(int delay, int ch) {
-    int result = delay;
+/* Return a new speed clamped to [SPEED_MIN, SPEED_MAX] for the pressed key. */
+static int adjust_speed(int speed, int ch) {
+    int result = speed;
     if (ch == KEY_FASTER_LOWER || ch == KEY_FASTER_UPPER) {
-        result = delay - DELAY_STEP;
+        result = speed + 1;
     }
     if (ch == KEY_SLOWER_LOWER || ch == KEY_SLOWER_UPPER) {
-        result = delay + DELAY_STEP;
+        result = speed - 1;
     }
-    if (result < DELAY_MIN) {
-        result = DELAY_MIN;
+    if (result < SPEED_MIN) {
+        result = SPEED_MIN;
     }
-    if (result > DELAY_MAX) {
-        result = DELAY_MAX;
+    if (result > SPEED_MAX) {
+        result = SPEED_MAX;
     }
     return result;
 }
 
-/* Bind ncurses to the controlling terminal so keyboard input still works
- * even when stdin has been redirected from a seed file. */
-static SCREEN* init_screen(FILE* terminal) {
-    SCREEN* screen = newterm(NULL, stdout, terminal);
-    if (screen != NULL) {
-        cbreak();
-        noecho();
-        curs_set(0);
-        keypad(stdscr, TRUE);
-    }
-    return screen;
-}
-
-/* Main loop: render, wait for input up to "delay" ms, then evolve.
- * The two boards are swapped instead of copied, so each tick is O(rows*cols)
- * with no extra allocation. */
+/* Main loop: draw the colony, read one control character, then evolve by
+ * "speed" generations. The game ends on Space or at end of input. */
 static void run_game(Field* current, Field* next) {
-    int delay = DELAY_START;
+    int speed = SPEED_START;
     int generation = 0;
     int running = 1;
     while (running) {
-        draw_field(current);
-        draw_status(generation, count_population(current), delay);
-        refresh();
-        timeout(delay);
-        int ch = getch();
-        if (ch == KEY_QUIT) {
+        draw_field(current, generation, count_population(current), speed);
+        int ch = getchar();
+        if (ch == EOF || ch == KEY_QUIT) {
             running = 0;
-        }
-        delay = adjust_delay(delay, ch);
-        if (running) {
-            next_generation(current, next);
-            Field* swap = current;
-            current = next;
-            next = swap;
-            generation++;
+        } else if (ch == KEY_FASTER_LOWER || ch == KEY_FASTER_UPPER || ch == KEY_SLOWER_LOWER ||
+                   ch == KEY_SLOWER_UPPER) {
+            speed = adjust_speed(speed, ch);
+        } else {
+            for (int i = 0; i < speed; i++) {
+                step(&current, &next);
+            }
+            generation += speed;
         }
     }
 }
